@@ -1,10 +1,11 @@
-//2024.3.15 23:07
+//2024.3.27 02:25
 #include "../Common/Include/stm32l051xx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "../Common/Include/serial.h"
 #include <math.h>
 #include "UART2.h"
+#include "adc.h"
 
 #define F_CPU 32000000L
 #define DEF_F 100000L // 10us tick
@@ -15,8 +16,14 @@ volatile unsigned int pwm1=100, pwm2=100, pwm3=100,pwm4=100;
 volatile float f_init;
 volatile int check_spk_count = 0;
 volatile int speaker_on=0;
-volatile float speaker_freq = 2048;
-
+//volatile float speaker_freq = 2048;
+volatile float speaker_freq = 1;
+volatile unsigned int Count=0;
+volatile unsigned int navigate_around=0;
+volatile unsigned int navigate_line=0;
+volatile float f_nav;
+volatile float f_mov;
+volatile char prev_indcode='O';
 
 void wait_1ms(void)
 {
@@ -148,6 +155,13 @@ void Hardware_Init(void)
 	GPIOA->PUPDR &= ~(BIT3);
 // JDY40 config end
 
+	//IR config begin
+	RCC->IOPENR  |= BIT1;         // peripheral clock enable for port B
+	GPIOB->MODER |= (BIT2|BIT3);  // Select analog mode for PB1 (pin 15 of LQFP32 package)
+
+	//IR config end
+
+
 	// Set up timer
 	RCC->APB1ENR |= BIT0;  // turn on clock for timer2 (UM: page 177)
 	TIM2->ARR = F_CPU/DEF_F-1;
@@ -175,7 +189,7 @@ void Hardware_Init(void)
 long int GetPeriod (int n)
 {
 	TIM2->CR1 &= ~BIT0;
-	TIM21->CR1 &= ~BIT0;
+	//TIM21->CR1 &= ~BIT0;
 	int i;
 	unsigned int saved_TCNT1a, saved_TCNT1b;
 	unsigned char overflow;
@@ -222,7 +236,7 @@ long int GetPeriod (int n)
 	SysTick->CTRL = 0x00; // Disable Systick counter
 	
 	TIM2->CR1 |= BIT0;
-	TIM21->CR1 |= BIT0;
+	//TIM21->CR1 |= BIT0;
 	
 	return 0xffffff-SysTick->VAL;
 }
@@ -260,24 +274,62 @@ float get_frequency(void){
 float get_ave_freq(void){
 	float sum=0.0;
 
-	for(int i=0;i<20;i++){
+	for(int i=0;i<10;i++){
 		
 		sum+=get_frequency();
 	}
-	return sum/20.0;
+	return sum/10.0;
+}
+
+char indencode(float diff){
+	if(diff<230.0){
+		return 'O';//no alram 
+	}else if(diff>=230.0 && diff<300.0){
+		return 'A';//small 
+	}else if(diff>=300.0 && diff<400.0){
+		return 'B';//small medium
+	}else if(diff>=400.0 && diff<500){
+		return 'C';//medium
+	}else if(diff>=500 && diff<600){
+		return 'D';//medium high
+	}else if(diff>=600 && diff<700){
+		return 'E';//high
+	}else if(diff>=700){
+		return 'F';//most
+	}
 }
 
 void check_speaker(void){
 	float f = get_ave_freq();
 	float diff = f-f_init;
-	//printf("%f %f %f\r", f, f_init,diff);
+	char buff[80];
+	char code_tosent;
+	
 	if(f-f_init >= 230){
-		speaker_freq = diff+1000.0;
+		speaker_freq = (diff-230.0);
 		TIM21->ARR = F_CPU/(2L*speaker_freq);
 		speaker_on=1;
+		if(navigate_around == 1){
+			navigate_around = 0;
+			sprintf(buff, "%c\r\n", 'G');//G means navigate around is done
+			eputs2(buff);
+		}
 	}
 	else{
 		speaker_on=0;
+		
+	}
+	if(speaker_on==0){
+		GPIOA->ODR &= (~BIT0);
+	}
+	//printf("%f %f %f\r", f, f_init, diff);
+	//delayms(100);
+	code_tosent = indencode(diff);
+	if(code_tosent != prev_indcode){
+		sprintf(buff, "%c\r\n", code_tosent);
+		eputs2(buff);
+		//printf(buff);
+		prev_indcode = code_tosent;
 	}
 }
 
@@ -289,8 +341,13 @@ void check_speaker(void){
 void TIM21_Handler(void) 
 {
 	TIM21->SR &= ~BIT0; // clear update interrupt flag
-	if(speaker_on){
-		GPIOA->ODR ^= BIT0; // Toggle PA0
+	Count++;
+	if (Count > 500)
+	{ 
+		Count = 0;
+		if(speaker_on){
+			GPIOA->ODR ^= BIT0; // Toggle PA0
+		} // toggle the state of the LED every half second
 	}
 }
 
@@ -307,30 +364,115 @@ void SendATCommand (char * s)
 	printf("Response: %s", buff);
 }
 
+void pwmdecode(char* buff, double* xpwm, double* ypwm){
+	switch (buff[0])
+	{
+	case 'A':
+		*xpwm = 5.0;
+		*ypwm = 5.0;
+		break;
+	case 'B':
+		*xpwm = 5.0;
+		*ypwm = 2.43;
+		break;
+	case 'C':
+		*xpwm = 5.0;
+		*ypwm = 0.0;
+		break;
+	case 'D':
+		*xpwm = 2.37;
+		*ypwm = 5.0;
+		break;
+	case 'E':
+		*xpwm = 2.37;
+		*ypwm = 2.43;
+		break;
+	case 'F':
+		*xpwm = 2.37;
+		*ypwm = 0.0;
+		break;
+	case 'G':
+		*xpwm = 0.0;
+		*ypwm = 5.0;
+		break;
+	case 'H':
+		*xpwm = 0.0;
+		*ypwm = 2.43;
+		break;
+	case 'I':
+		*xpwm = 0.0;
+		*ypwm = 0.0;
+		break;
+		
+	case 'a':
+		*xpwm = 4;
+		*ypwm = 4;
+		break;
+	case 'b':
+		*xpwm = 4;
+		*ypwm = 2.43;
+		break;
+	case 'c':
+		*xpwm = 4;
+		*ypwm = 2;
+		break;
+	case 'd':
+		*xpwm = 2.37;
+		*ypwm = 4;
+		break;
+	case 'f':
+		*xpwm = 2.37;
+		*ypwm = 2;
+		break;
+	case 'g':
+		*xpwm = 2;
+		*ypwm = 4;
+		break;
+	case 'h':
+		*xpwm = 2;
+		*ypwm = 2.43;
+		break;
+	case 'i':
+		*xpwm = 2;
+		*ypwm = 2;
+		break;
+
+	case 'N':
+		navigate_around = !navigate_around;
+		break;
+		
+	case 'M':
+		navigate_line=1;
+		break;
+	default:
+		break;
+	}
+}
+
+
+
 int main(void)
 {	
-	char buff[16];
-    char xbuf[16];
-    char ybuf[16];
+	char buff[3];
     double xpwmtest;
     double ypwmtest;
-    double xpwm;	//we get the x
-    double ypwm;	//we get the y
+    double xpwm=2.37;	//we get the x
+    double ypwm=2.43;	//we get the y
 	int cnt=0;
 	int j;
+	int j2;//for IR
+	float a; //for IR
 	int p=0;
 	int flag = 0;
-	int strLength;
-
+	
 	Hardware_Init();
 	initUART2(9600);
-
+	//for IR
+	initADC();
 	delayms(1000); // Give putty a chance to start before we send characters with printf()
 
     printf("(outputs are PA11 and PA12, pins 21 and 22).\r\n");
     printf("By Jesus Calvino-Fraga (c) 2018-2023.\r\n\r\n");
-    
-    f_init = get_ave_freq();
     
 //JDY40 init begin
 	SendATCommand("AT+DVIDABCD\r\n");  
@@ -349,136 +491,209 @@ int main(void)
 	// SendATCommand("AT+RFIDCDBA\r\n");
 
 	// To check configuration
-	SendATCommand("AT+VER\r\n");
-	SendATCommand("AT+BAUD\r\n");
-	SendATCommand("AT+RFID\r\n");
-	SendATCommand("AT+DVID\r\n");
-	SendATCommand("AT+RFC\r\n");
-	SendATCommand("AT+POWE\r\n");
-	SendATCommand("AT+CLSS\r\n");
+	//SendATCommand("AT+VER\r\n");
+	//SendATCommand("AT+BAUD\r\n");
+	//SendATCommand("AT+RFID\r\n");
+	//SendATCommand("AT+DVID\r\n");
+	//SendATCommand("AT+RFC\r\n");
+	//SendATCommand("AT+POWE\r\n");
+	//SendATCommand("AT+CLSS\r\n");
 	cnt=0;
 //JDY40 init end
     
-
+	f_init = get_ave_freq();
 
 	while (1)
-	{
-    	fflush(stdout);
+	{		
+		
+		waitms(100);
+
+    	//fflush(stdout);
     	//egets_echo(buf, 31); // wait here until data is received
   		//printf("\r\n");
-  		waitms(200);
+  	
 		if(ReceivedBytes2()>0) // Something has arrived
 		{
-			strLength = egets2(buff, sizeof(buff)-1);
-		
+			egets2(buff, sizeof(buff)-1);
+			printf(buff);
 			
 			//buf[4]='\0';
 			//printf("%d",xpwm);
 	    	//fflush(stdout);
 	    	//egets_echo(buf, 31); // wait here until data is received
 	 		//printf("\r\n");
-			if(strLength >= 13){
-				p = 0;
-				flag=0;
+		// 	if(strLength >= 13){
+		// 		p = 0;
+		// 		flag=0;
 				
-				for(int i=0;i<=15;i++){
-					if(flag){
-						ybuf[p]=buff[i];
+		// 		for(int i=0;i<=15;i++){
+		// 			if(flag){
+		// 				ybuf[p]=buff[i];
 						
-						p++;
-					}
-					else{
-						xbuf[i]=buff[i];
-					}
+		// 				p++;
+		// 			}
+		// 			else{
+		// 				xbuf[i]=buff[i];
+		// 			}
 					
-					if(buff[i]==','){
-						flag=1;
+		// 			if(buff[i]==','){
+		// 				flag=1;
 						
-					}
-				}
+		// 			}
+		// 		}
 				
-				xpwmtest=atof(xbuf);
-				ypwmtest=atof(ybuf);
+		// 		xpwmtest=atof(xbuf);
+		// 		ypwmtest=atof(ybuf);
 				
-				//for(int i=5;i<=9;i++){
-				//	ybuf[i-5]=buff[i];
-				//}
-				//buf[8]='\0';
-				if(xpwmtest < 5){
-					xpwm = xpwmtest;
-				}
-				if(ypwmtest < 5){
-					ypwm = ypwmtest;
-				}
-				
+		// 		//for(int i=5;i<=9;i++){
+		// 		//	ybuf[i-5]=buff[i];
+		// 		//}
+		// 		//buf[8]='\0';
+		// 		if(xpwmtest < 5){
+		// 			xpwm = xpwmtest;
+		// 		}
+		// 		if(ypwmtest < 5){
+		// 			ypwm = ypwmtest;
+		// 		}
+		// 		//printf("%lf",xpwm);
+		// 		//printf("%lf",ypwm);
 			
-			}
+		// 	}
+			pwmdecode(buff, &xpwm, &ypwm);
 		}
 		//pwm 1 and 2 controlling left wheel while pwm 3 and 4 controlling right.
 		//pwm1 and pwm 3 will control moving forward
-		///////////// jia y xi shu
-		if(xpwm>2.37){
-			//car go forward
-			//printf("%lf",xpwm);
-			//printf("%lf",ypwm);
-			pwm2=0;
-			pwm4=0;
-			//moving to the right
-			if(ypwm>2.43){
-			pwm1=((xpwm-2.37)*500.0)+((ypwm-2.43)*400);
-			pwm3=((xpwm-2.37)*500.0);//can moderate coeffcient here
-			}else if(ypwm<2.43){//moving to left
-			pwm3=((xpwm-2.37)*500.0)+((2.43-ypwm)*400);
-			pwm1=((xpwm-2.37)*500.0);//can moderate coeffcient here
-			}else{//not y compennet
-				pwm3=((xpwm-2.37)*600.0);
-				pwm1=((xpwm-2.37)*600.0);
-			}
-		}
-	//no y component	}
-		else if(xpwm<2.37){
-			//car go back
-			pwm1=0;
-			pwm3=0;
+	
 
-			//moving to the right
-			if(ypwm>2.43){
-			pwm2=((2.37-xpwm)*500.0)+((ypwm-2.43)*400);
-			pwm4=((2.37-xpwm)*500.0);//can moderate coeffcient here
-			}else if(ypwm<2.43){//moving to left
-			pwm4=((2.37-xpwm)*500.0)+((2.43-ypwm)*400);
-			pwm2=((2.37-xpwm)*500.0);//can moderate coeffcient here
-			}else{//not y compennet
-				pwm2=((2.37-xpwm)*600.0);
-				pwm4=((2.37-xpwm)*600.0);
-			}
+		j2=readADC(ADC_CHSELR_CHSEL9);
+		a=(j2*3.3)/0x1000;
+	
+		if(navigate_line ==1){
+			//printf("Navigate line\r");
+			f_nav=get_ave_freq();
+			f_mov=get_ave_freq();
 
-
-
-
-		}else{
-			//car stay still or moving in y component
-			if(ypwm==2.43){
+			while((f_nav-f_mov)<=400){
+				pwm2=0;
 				pwm1=0;
+				pwm3=1000;
+				pwm4=0;
+				f_mov=get_ave_freq();
+			}
+			SysTick->LOAD = (F_CPU/1000L) - 1; 
+			SysTick->VAL = 0; 
+			SysTick->CTRL  = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+			int over_line=0;
+			while((f_nav-f_mov) >= 30){
+				pwm1=1000;
 				pwm2=0;
 				pwm3=0;
 				pwm4=0;
+				f_mov=get_ave_freq();
+				if((SysTick->CTRL & BIT16)==0){
+					over_line++;
+				}
+				if(over_line==300){
+					navigate_line = 0;
+					sprintf(buff, "%c\r\n", 'H');// H means navigate line is done
+					eputs2(buff);
+					break;
+					
+				}
+				
+			}
+			SysTick->CTRL = 0x00;
+		}
 
-			}else if(ypwm>2.43){//moving to the right
-				pwm1=(ypwm-2.43)*800;
-				pwm2=0;
+
+		if(navigate_around==1 && navigate_line==0){
+		//	printf("Navigate around a=%f\r", a);
+				if (a>1.7){
+					pwm1=0;
+					pwm2=0;
+					pwm3=0;
+					pwm4=0;
+					navigate_around=0;
+				}else{
+					pwm1=1800;
+					pwm2=0;
+					pwm3=500;
+					pwm4=0;
+				}
+				check_speaker();
+
+		}
+		else if(navigate_around==0 && navigate_line==0){
+			//printf("Remote control\r");
+			if(xpwm>2.37){
+				if (a>1.7){
+					pwm1=0;
+					pwm2=0;
+					pwm3=0;
+					pwm4=0;
+				}else{
+					//car go forward
+					//printf("%lf",xpwm);
+					//printf("%lf",ypwm);
+					pwm2=0;
+					pwm4=0;
+					//moving to the right
+					if(ypwm>2.43){
+					pwm1=((xpwm-2.37)*800)+((ypwm-2.43)*400);
+					pwm3=((xpwm-2.37)*600.0);//can moderate coeffcient here
+					}else if(ypwm<2.43){//moving to left
+					pwm3=((xpwm-2.37)*400.0)+((2.43-ypwm)*400);
+					pwm1=((xpwm-2.37)*800.0);//can moderate coeffcient here
+					}else{//not y compennet
+						pwm3=((xpwm-2.37)*800.0);
+						pwm1=((xpwm-2.37)*1000.0);
+					}
+				}
+			}
+		//no y component	}
+			else if(xpwm<2.37){
+				//car go back
+				pwm1=0;
 				pwm3=0;
-				pwm4=0;
+
+				//moving to the right
+				if(ypwm>2.43){
+				pwm2=((2.37-xpwm)*700.0)+((ypwm-2.43)*400);
+				pwm4=((2.37-xpwm)*500.0);//can moderate coeffcient here
+				}else if(ypwm<2.43){//moving to left
+				pwm4=((2.37-xpwm)*400.0)+((2.43-ypwm)*400);
+				pwm2=((2.37-xpwm)*700.0);//can moderate coeffcient here
+				}else{//not y compennet
+					pwm2=((2.37-xpwm)*800.0);
+					pwm4=((2.37-xpwm)*1300);
+				}
+
+
+
+
 			}else{
-				pwm1=0;
-				pwm2=0;
-				pwm3=(2.43-ypwm)*800;
-				pwm4=0;
-			}
+				//car stay still or moving in y component
+				if(ypwm==2.43){
+					pwm1=0;
+					pwm2=0;
+					pwm3=0;
+					pwm4=0;
 
-			
-		}
-		check_speaker();
-		//printf("p1 %d,p2 %d,p3 %d,p4 %d\r\n",pwm1,pwm2,pwm3,pwm4);
+				}else if(ypwm>2.43){//moving to the right
+					pwm1=(ypwm-2.43)*900;
+					pwm2=0;
+					pwm3=0;
+					pwm4=0;
+				}else{
+					pwm1=0;
+					pwm2=0;
+					pwm3=(2.43-ypwm)*900;
+					pwm4=0;
+				}
+
+				
+			}
+			check_speaker();
+		}		//printf("p1 %d,p2 %d,p3 %d,p4 %d\r\n",pwm1,pwm2,pwm3,pwm4);
 	}
 }

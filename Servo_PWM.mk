@@ -10,7 +10,7 @@ LIBPATH1=$(subst \libgcc.a,,$(shell dir /s /b "$(GCCPATH)*libgcc.a" | find "v6-m
 LIBPATH2=$(subst \libc_nano.a,,$(shell dir /s /b "$(GCCPATH)*libc_nano.a" | find "v6-m"))
 LIBSPEC=-L"$(LIBPATH1)" -L"$(LIBPATH2)"
 
-OBJS=main.o serial.o startup.o newlib_stubs.o UART2.o
+OBJS=main.o serial.o startup.o newlib_stubs.o UART2.o adc.o
 
 PORTN=$(shell type COMPORT.inc)
 
@@ -35,6 +35,9 @@ newlib_stubs.o: ../Common/Source/newlib_stubs.c
 
 UART2.o: UART2.c
 	$(CC) -c $(CCFLAGS) UART2.c -o UART2.o
+	
+adc.o: adc.c
+	$(CC) -c $(CCFLAGS) adc.c -o adc.o
 	
 clean: 
 	@del $(OBJS) 2>NUL
