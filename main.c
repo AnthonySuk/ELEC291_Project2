@@ -1,4 +1,3 @@
-//2024.3.27 02:25
 #include "../Common/Include/stm32l051xx.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +11,7 @@
 //#define DEF_F 15000L suspicious
 
 volatile int PWM_Counter = 0;
-volatile unsigned int pwm1=100, pwm2=100, pwm3=100,pwm4=100;
+volatile unsigned int pwm1=100, pwm2=100, pwm3=100,pwm4=10,pwmled=100;
 volatile float f_init;
 volatile int check_spk_count = 0;
 volatile int speaker_on=0;
@@ -24,6 +23,12 @@ volatile unsigned int navigate_line=0;
 volatile float f_nav;
 volatile float f_mov;
 volatile char prev_indcode='O';
+volatile unsigned int magnet=0;
+volatile int safe_flag=0;
+volatile int safe_count=0;
+volatile int ind_counter = 0;
+volatile char ind_prev = 'O';
+volatile int requested_tosend = 0;
 
 void wait_1ms(void)
 {
@@ -90,6 +95,17 @@ void TIM2_Handler(void)
 	{
 		GPIOA->ODR &= ~BIT14;
 	}
+///////////////////////////////pwm for light 
+
+	if(pwmled>PWM_Counter)
+	{
+		GPIOA->ODR |= BIT15;
+	}
+	else
+	{
+		GPIOA->ODR &= ~BIT15;
+	}
+	
 
 
 	
@@ -107,13 +123,13 @@ void TIM2_Handler(void)
 //      PC15 -|3       30|- PB7
 //      NRST -|4       29|- PB6
 //      VDDA -|5       28|- PB5
-// (Spk) PA0 -|6       27|- PB4
+// (LED) PA0 -|6       27|- PB4
 //       PA1 -|7       26|- PB3
-//  (TX) PA2 -|8       25|- PA15
+//  (TX) PA2 -|8       25|- PA15 (light pwm)
 //  (RX) PA3 -|9       24|- PA14 (pwm4)
 // (SET) PA4 -|10      23|- PA13 (pwm3)
 //       PA5 -|11      22|- PA12 (pwm2)
-//       PA6 -|12      21|- PA11 (pwm1)
+// (mag) PA6 -|12      21|- PA11 (pwm1)
 //       PA7 -|13      20|- PA10 (Reserved for RXD)
 //       PB0 -|14      19|- PA9  (Reserved for TXD)
 //       PB1 -|15      18|- PA8	 (ADC for Oscillator)
@@ -138,6 +154,12 @@ void Hardware_Init(void)
 	GPIOA->OTYPER &= ~BIT13; // Push-pull
     GPIOA->MODER = (GPIOA->MODER & ~(BIT28|BIT29)) | BIT28; // Make pin PA14 output (page 200 of RM0451, two bits used to configure: bit0=1, bit1=0)
 	GPIOA->OTYPER &= ~BIT14; // Push-pull
+	GPIOA->MODER = (GPIOA->MODER & ~(BIT12|BIT13)) | BIT12; // Make pin PA6 output (page 200 of RM0451, two bits used to configure: bit0=1, bit1=0)
+	GPIOA->OTYPER &= ~BIT6; // Push-pull
+//for light pwm init
+
+	GPIOA->MODER = (GPIOA->MODER & ~(BIT30|BIT31)) | BIT30; // Make pin PA15 output (page 200 of RM0451, two bits used to configure: bit0=1, bit1=0)
+	GPIOA->OTYPER &= ~BIT15; // Push-pull
 
 	GPIOA->MODER &= ~(BIT16 | BIT17); // Make pin PA8 input
 	// Activate pull up for pin PA8:
@@ -285,52 +307,94 @@ char indencode(float diff){
 	if(diff<230.0){
 		return 'O';//no alram 
 	}else if(diff>=230.0 && diff<300.0){
-		return 'A';//small 
+		return 'P';//small 
 	}else if(diff>=300.0 && diff<400.0){
-		return 'B';//small medium
+		return 'Q';//small medium
 	}else if(diff>=400.0 && diff<500){
-		return 'C';//medium
+		return 'R';//medium
 	}else if(diff>=500 && diff<600){
-		return 'D';//medium high
+		return 'S';//medium high
 	}else if(diff>=600 && diff<700){
-		return 'E';//high
+		return 'T';//high
 	}else if(diff>=700){
-		return 'F';//most
+		return 'U';//most
+	}
+	else{
+		return 'O';///////////////////////////////////////////////////////////////////////////////////////////
 	}
 }
 
 void check_speaker(void){
 	float f = get_ave_freq();
 	float diff = f-f_init;
-	char buff[80];
 	char code_tosent;
-	
+	char buff[3];
 	if(f-f_init >= 230){
 		speaker_freq = (diff-230.0);
 		TIM21->ARR = F_CPU/(2L*speaker_freq);
 		speaker_on=1;
+		magnet = 1;
+		if(navigate_around==0 && navigate_line==0 && safe_flag==0){
+			GPIOA->ODR |= BIT6;
+		}
 		if(navigate_around == 1){
-			navigate_around = 0;
-			sprintf(buff, "%c\r\n", 'G');//G means navigate around is done
+			sprintf(buff, "%c%c%c%c%c\n", 'X', 'X', 'X', 'X', 'X');//X means navigate around is done
 			eputs2(buff);
+			navigate_around = 0;
 		}
 	}
 	else{
 		speaker_on=0;
-		
 	}
 	if(speaker_on==0){
 		GPIOA->ODR &= (~BIT0);
 	}
 	//printf("%f %f %f\r", f, f_init, diff);
 	//delayms(100);
-	code_tosent = indencode(diff);
-	if(code_tosent != prev_indcode){
-		sprintf(buff, "%c\r\n", code_tosent);
+	/////////ind_prev = indencode(diff);
+	//if(code_tosent != prev_indcode){
+	//	waitms(50);
+	//	sprintf(buff, "%c\n", code_tosent);
+	//	eputs2(buff);
+	//	prev_indcode = code_tosent;
+	//}
+	if(requested_tosend == 1){
+		requested_tosend = 0;
+		code_tosent = indencode(diff);
+		sprintf(buff, "%c\n", code_tosent);
 		eputs2(buff);
-		//printf(buff);
-		prev_indcode = code_tosent;
 	}
+		// if(navigate_around==0 && navigate_line==0){
+		// 	if(ind_prev){
+		// 		if(ind_prev != code_tosent){
+		// 			ind_counter=0;
+		// 			code_tosent = ind_prev;
+		// 			sprintf(buff, "%c\n", code_tosent);
+		// 			eputs2(buff);
+		// 			//eputs2(buff);
+		// 			//eputs2(buff);
+		// 			//eputs2(buff);
+		// 			//eputs2(buff);
+		// 		}
+		// 		else{
+		// 			ind_counter++;
+		// 		}
+		// 	}
+			
+		// 	if(ind_counter>= 200){
+		// 		ind_counter=0;
+		// 		code_tosent = ind_prev;
+		// 		sprintf(buff, "%c\n", code_tosent);
+		// 		eputs2(buff);
+		// 		//eputs2(buff);
+		// 		//sprintf(buff, "%c\n", code_tosent);
+		// 		//eputs2(buff);
+		// 		//eputs2(buff);
+		// 		//eputs2(buff);
+		// 		//eputs2(buff);
+		// 		//eputs2(buff);
+		// 	}
+		// }
 }
 
 // Interrupt service routines are the same as normal
@@ -367,6 +431,7 @@ void SendATCommand (char * s)
 void pwmdecode(char* buff, double* xpwm, double* ypwm){
 	switch (buff[0])
 	{
+	//right forward
 	case 'A':
 		*xpwm = 5.0;
 		*ypwm = 5.0;
@@ -405,45 +470,59 @@ void pwmdecode(char* buff, double* xpwm, double* ypwm){
 		break;
 		
 	case 'a':
-		*xpwm = 4;
-		*ypwm = 4;
+		*xpwm = 4.123;
+		*ypwm = 4.143;
 		break;
 	case 'b':
-		*xpwm = 4;
+		*xpwm = 4.123;
 		*ypwm = 2.43;
 		break;
 	case 'c':
-		*xpwm = 4;
-		*ypwm = 2;
+		*xpwm = 4.123;
+		*ypwm = 0.81;
 		break;
 	case 'd':
 		*xpwm = 2.37;
-		*ypwm = 4;
+		*ypwm = 4.143;
 		break;
 	case 'f':
 		*xpwm = 2.37;
-		*ypwm = 2;
+		*ypwm = 0.81;///////////////////////slow
 		break;
 	case 'g':
-		*xpwm = 2;
-		*ypwm = 4;
+		*xpwm = 0.79;
+		*ypwm = 4.143;
 		break;
 	case 'h':
-		*xpwm = 2;
+		*xpwm = 0.79;
 		*ypwm = 2.43;
 		break;
 	case 'i':
-		*xpwm = 2;
-		*ypwm = 2;
+		*xpwm = 0.79;
+		*ypwm = 0.81;
 		break;
 
 	case 'N':
-		navigate_around = !navigate_around;
+		if(navigate_line == 0){
+			navigate_around = 1;
+		}
 		break;
 		
 	case 'M':
-		navigate_line=1;
+		if(navigate_around == 0){
+			navigate_line=1;
+		}
 		break;
+		
+	case 'Z':
+		magnet=0;
+		GPIOA->ODR &= ~BIT6;
+		break;
+		
+	case 'V':
+		requested_tosend = 1;
+		break;
+		
 	default:
 		break;
 	}
@@ -453,7 +532,7 @@ void pwmdecode(char* buff, double* xpwm, double* ypwm){
 
 int main(void)
 {	
-	char buff[3];
+	char buff[10];
     double xpwmtest;
     double ypwmtest;
     double xpwm=2.37;	//we get the x
@@ -506,7 +585,9 @@ int main(void)
 	while (1)
 	{		
 		
-		waitms(100);
+		//waitms(150)
+		//printf("%d,%d\r\n",safe_flag,safe_count);
+
 
     	//fflush(stdout);
     	//egets_echo(buf, 31); // wait here until data is received
@@ -515,50 +596,7 @@ int main(void)
 		if(ReceivedBytes2()>0) // Something has arrived
 		{
 			egets2(buff, sizeof(buff)-1);
-			printf(buff);
-			
-			//buf[4]='\0';
-			//printf("%d",xpwm);
-	    	//fflush(stdout);
-	    	//egets_echo(buf, 31); // wait here until data is received
-	 		//printf("\r\n");
-		// 	if(strLength >= 13){
-		// 		p = 0;
-		// 		flag=0;
-				
-		// 		for(int i=0;i<=15;i++){
-		// 			if(flag){
-		// 				ybuf[p]=buff[i];
-						
-		// 				p++;
-		// 			}
-		// 			else{
-		// 				xbuf[i]=buff[i];
-		// 			}
-					
-		// 			if(buff[i]==','){
-		// 				flag=1;
-						
-		// 			}
-		// 		}
-				
-		// 		xpwmtest=atof(xbuf);
-		// 		ypwmtest=atof(ybuf);
-				
-		// 		//for(int i=5;i<=9;i++){
-		// 		//	ybuf[i-5]=buff[i];
-		// 		//}
-		// 		//buf[8]='\0';
-		// 		if(xpwmtest < 5){
-		// 			xpwm = xpwmtest;
-		// 		}
-		// 		if(ypwmtest < 5){
-		// 			ypwm = ypwmtest;
-		// 		}
-		// 		//printf("%lf",xpwm);
-		// 		//printf("%lf",ypwm);
-			
-		// 	}
+			//printf(buff);
 			pwmdecode(buff, &xpwm, &ypwm);
 		}
 		//pwm 1 and 2 controlling left wheel while pwm 3 and 4 controlling right.
@@ -567,11 +605,25 @@ int main(void)
 
 		j2=readADC(ADC_CHSELR_CHSEL9);
 		a=(j2*3.3)/0x1000;
-	
-		if(navigate_line ==1){
+		
+		if(a>0.6){
+		pwmled=(a-0.6)*900;
+		}
+		else{
+		pwmled=0;
+		}
+		
+		if(navigate_line == 1 && safe_flag==0){
+			//check_speaker();
 			//printf("Navigate line\r");
 			f_nav=get_ave_freq();
 			f_mov=get_ave_freq();
+
+			SysTick->LOAD = (F_CPU/1000L) - 1; 
+			SysTick->VAL = 0; 
+			SysTick->CTRL  = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+			int over_line=0;
+
 
 			while((f_nav-f_mov)<=400){
 				pwm2=0;
@@ -579,11 +631,29 @@ int main(void)
 				pwm3=1000;
 				pwm4=0;
 				f_mov=get_ave_freq();
+				if((SysTick->CTRL & BIT16)==0){
+					over_line++;
+				}
+				if(over_line==300){
+					navigate_line = 0;
+					//sprintf(buff, "%c%c%c%c%c\n", 'Y', 'Y', 'Y', 'Y', 'Y');// Y means navigate line is done
+					//eputs2(buff);
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('\n');
+					break;
+					
+				}
 			}
+			SysTick->CTRL = 0x00;
+			
 			SysTick->LOAD = (F_CPU/1000L) - 1; 
 			SysTick->VAL = 0; 
 			SysTick->CTRL  = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
-			int over_line=0;
+			over_line=0;
 			while((f_nav-f_mov) >= 30){
 				pwm1=1000;
 				pwm2=0;
@@ -595,8 +665,12 @@ int main(void)
 				}
 				if(over_line==300){
 					navigate_line = 0;
-					sprintf(buff, "%c\r\n", 'H');// H means navigate line is done
-					eputs2(buff);
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('Y');
+					eputc2('\n');
 					break;
 					
 				}
@@ -604,16 +678,39 @@ int main(void)
 			}
 			SysTick->CTRL = 0x00;
 		}
+	
+		if(safe_flag==1){
+			if(safe_count<300){
+			pwm2=2000;
+			pwm4=2000;
+			pwm1=0;
+			pwm3=0;
+			safe_count++;
+			}
+			else if(safe_count>=300 && safe_count<550){
+			pwm1=2000;
+			pwm2=0;
+			pwm3=0;
+			pwm4=0;
+			safe_count++;
+			
+			}else{
+				safe_flag=0;
+				safe_count=0;
+			}
+		}
 
-
-		if(navigate_around==1 && navigate_line==0){
-		//	printf("Navigate around a=%f\r", a);
+		if(navigate_around==1 && navigate_line==0 && safe_flag==0){
+			//printf("Navigate around a=%f\r", a);
 				if (a>1.7){
 					pwm1=0;
 					pwm2=0;
 					pwm3=0;
 					pwm4=0;
-					navigate_around=0;
+					sprintf(buff, "%c%c%c%c%c\n", 'X', 'X', 'X', 'X', 'X');//X means navigate around is done
+					eputs2(buff);
+				
+					navigate_around=0;					
 				}else{
 					pwm1=1800;
 					pwm2=0;
@@ -623,14 +720,12 @@ int main(void)
 				check_speaker();
 
 		}
-		else if(navigate_around==0 && navigate_line==0){
+		else if(navigate_around==0 && navigate_line==0 && safe_flag==0){
 			//printf("Remote control\r");
 			if(xpwm>2.37){
 				if (a>1.7){
-					pwm1=0;
-					pwm2=0;
-					pwm3=0;
-					pwm4=0;
+					safe_flag=1;
+					safe_count=0;
 				}else{
 					//car go forward
 					//printf("%lf",xpwm);
@@ -639,14 +734,14 @@ int main(void)
 					pwm4=0;
 					//moving to the right
 					if(ypwm>2.43){
-					pwm1=((xpwm-2.37)*800)+((ypwm-2.43)*400);
-					pwm3=((xpwm-2.37)*600.0);//can moderate coeffcient here
+					pwm1=((xpwm-2.37)*380)+((ypwm-2.43)*380);
+					pwm3=((xpwm-2.37)*380);//can moderate coeffcient here
 					}else if(ypwm<2.43){//moving to left
-					pwm3=((xpwm-2.37)*400.0)+((2.43-ypwm)*400);
-					pwm1=((xpwm-2.37)*800.0);//can moderate coeffcient here
+					pwm3=((xpwm-2.37)*380)+((2.43-ypwm)*400);
+					pwm1=((xpwm-2.37)*380);//can moderate coeffcient here
 					}else{//not y compennet
-						pwm3=((xpwm-2.37)*800.0);
-						pwm1=((xpwm-2.37)*1000.0);
+						pwm3=((xpwm-2.37)*761);
+						pwm1=((xpwm-2.37)*680);
 					}
 				}
 			}
@@ -658,14 +753,14 @@ int main(void)
 
 				//moving to the right
 				if(ypwm>2.43){
-				pwm2=((2.37-xpwm)*700.0)+((ypwm-2.43)*400);
-				pwm4=((2.37-xpwm)*500.0);//can moderate coeffcient here
+				pwm2=((2.37-xpwm)*400)+((ypwm-2.43)*400);
+				pwm4=((2.37-xpwm)*420.0);//can moderate coeffcient here
 				}else if(ypwm<2.43){//moving to left
 				pwm4=((2.37-xpwm)*400.0)+((2.43-ypwm)*400);
-				pwm2=((2.37-xpwm)*700.0);//can moderate coeffcient here
+				pwm2=((2.37-xpwm)*400.0);//can moderate coeffcient here
 				}else{//not y compennet
-					pwm2=((2.37-xpwm)*800.0);
-					pwm4=((2.37-xpwm)*1300);
+					pwm2=((2.37-xpwm)*747);
+					pwm4=((2.37-xpwm)*844);
 				}
 
 
@@ -680,14 +775,14 @@ int main(void)
 					pwm4=0;
 
 				}else if(ypwm>2.43){//moving to the right
-					pwm1=(ypwm-2.43)*900;
+					pwm1=(ypwm-2.43)*800;
 					pwm2=0;
 					pwm3=0;
 					pwm4=0;
 				}else{
 					pwm1=0;
 					pwm2=0;
-					pwm3=(2.43-ypwm)*900;
+					pwm3=(2.43-ypwm)*800;
 					pwm4=0;
 				}
 
