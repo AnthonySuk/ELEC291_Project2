@@ -1,4 +1,4 @@
-//2024.4.1 14:20
+//2024/4/6 14:53
 #include "../Common/Include/stm32l051xx.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -271,7 +271,9 @@ float get_frequency(void){
 	//float C2 = 100e-9;
 	//float Ct;
 	//float L;
+	//TIM2->CR1 &= ~BIT0;							//turn off timer 2
 	count=GetPeriod(100);
+	//TIM2->CR1 |= BIT0;							//turn on timer 2
 	if(count>0)
 	{
 		T=count/(F_CPU*100.0); // Since we have the time of 100 periods, we need to divide by 100
@@ -339,8 +341,17 @@ void check_speaker(void){
 			GPIOA->ODR |= BIT6;
 		}
 		if(navigate_around == 1){
-			sprintf(buff, "%c%c%c%c%c\n", 'X', 'X', 'X', 'X', 'X');//X means navigate around is done
-			eputs2(buff);
+			//sprintf(buff, "%c%c%c%c%c\n", 'X', 'X', 'X', 'X', 'X');
+			//eputc2('X');
+			//eputc2('\n');
+			//eputc2('X');
+			//eputc2('\n');
+			//eputc2('X');
+			//eputc2('\n');
+			//eputc2('X');
+			//eputc2('\n');
+			//eputc2('X');
+			//eputc2('\n');//X means navigate around is done
 			navigate_around = 0;
 		}
 	}
@@ -359,43 +370,14 @@ void check_speaker(void){
 	//	eputs2(buff);
 	//	prev_indcode = code_tosent;
 	//}
-	if(requested_tosend == 1){
-		requested_tosend = 0;
-		code_tosent = indencode(diff);
-		sprintf(buff, "%c\n", code_tosent);
-		eputs2(buff);
+	if(navigate_around==0 && navigate_line==0){
+		if(requested_tosend == 1){
+			requested_tosend = 0;
+			code_tosent = indencode(diff);
+			sprintf(buff, "%c\n", code_tosent);
+			eputs2(buff);
+		}
 	}
-		// if(navigate_around==0 && navigate_line==0){
-		// 	if(ind_prev){
-		// 		if(ind_prev != code_tosent){
-		// 			ind_counter=0;
-		// 			code_tosent = ind_prev;
-		// 			sprintf(buff, "%c\n", code_tosent);
-		// 			eputs2(buff);
-		// 			//eputs2(buff);
-		// 			//eputs2(buff);
-		// 			//eputs2(buff);
-		// 			//eputs2(buff);
-		// 		}
-		// 		else{
-		// 			ind_counter++;
-		// 		}
-		// 	}
-			
-		// 	if(ind_counter>= 200){
-		// 		ind_counter=0;
-		// 		code_tosent = ind_prev;
-		// 		sprintf(buff, "%c\n", code_tosent);
-		// 		eputs2(buff);
-		// 		//eputs2(buff);
-		// 		//sprintf(buff, "%c\n", code_tosent);
-		// 		//eputs2(buff);
-		// 		//eputs2(buff);
-		// 		//eputs2(buff);
-		// 		//eputs2(buff);
-		// 		//eputs2(buff);
-		// 	}
-		// }
 }
 
 // Interrupt service routines are the same as normal
@@ -429,8 +411,8 @@ void SendATCommand (char * s)
 	printf("Response: %s", buff);
 }
 
-void pwmdecode(char* buff, double* xpwm, double* ypwm){
-	switch (buff[0])
+void pwmdecode(char received_char, double* xpwm, double* ypwm){
+	switch (received_char)
 	{
 	//right forward
 	case 'A':
@@ -534,6 +516,7 @@ void pwmdecode(char* buff, double* xpwm, double* ypwm){
 int main(void)
 {	
 	char buff[10];
+	char received_code;
     double xpwmtest;
     double ypwmtest;
     double xpwm=2.37;	//we get the x
@@ -555,15 +538,15 @@ int main(void)
     printf("By Jesus Calvino-Fraga (c) 2018-2023.\r\n\r\n");
     
 //JDY40 init begin
-	SendATCommand("AT+DVIDABCD\r\n");  
-	SendATCommand("AT+RFIDCDBA\r\n");
+	SendATCommand("AT+DVID1145\r\n");  
+	SendATCommand("AT+RFID14AF\r\n");
 	//SendATCommand("AT+VER\r\n");
 	//SendATCommand("AT+BAUD4\r\n");
-	// SendATCommand("AT+RFID\r\n");
-	// SendATCommand("AT+DVID\r\n");
+	//SendATCommand("AT+RFID\r\n");
+	//SendATCommand("AT+DVID\r\n");
 	//SendATCommand("AT+RFC001\r\n");
-	// SendATCommand("AT+POWE9\r\n");
-	// SendATCommand("AT+CLSSA0\r\n");
+	//SendATCommand("AT+POWE9\r\n");
+	//SendATCommand("AT+CLSSA0\r\n");
 
 	// We should select an unique device ID.  The device ID can be a hex
 	// number from 0x0000 to 0xFFFF.  In this case is set to 0xABBA
@@ -596,9 +579,10 @@ int main(void)
   	
 		if(ReceivedBytes2()>0) // Something has arrived
 		{
-			egets2(buff, sizeof(buff)-1);
+			//egets2(buff, sizeof(buff)-1);
 			//printf(buff);
-			pwmdecode(buff, &xpwm, &ypwm);
+			received_code = egetc2();
+			pwmdecode(received_code, &xpwm, &ypwm);
 		}
 		//pwm 1 and 2 controlling left wheel while pwm 3 and 4 controlling right.
 		//pwm1 and pwm 3 will control moving forward
@@ -637,14 +621,6 @@ int main(void)
 				}
 				if(over_line==300){
 					navigate_line = 0;
-					//sprintf(buff, "%c%c%c%c%c\n", 'Y', 'Y', 'Y', 'Y', 'Y');// Y means navigate line is done
-					//eputs2(buff);
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('\n');
 					break;
 					
 				}
@@ -666,12 +642,6 @@ int main(void)
 				}
 				if(over_line==300){
 					navigate_line = 0;
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('Y');
-					eputc2('\n');
 					break;
 					
 				}
@@ -708,8 +678,16 @@ int main(void)
 					pwm2=0;
 					pwm3=0;
 					pwm4=0;
-					sprintf(buff, "%c%c%c%c%c\n", 'X', 'X', 'X', 'X', 'X');//X means navigate around is done
-					eputs2(buff);
+					//eputc2('X');
+					//eputc2('\n');
+					//eputc2('X');
+					//eputc2('\n');
+					//eputc2('X');
+					//eputc2('\n');
+					//eputc2('X');
+					//eputc2('\n');
+					//eputc2('X');
+					//eputc2('\n');//X means navigate around is done
 				
 					navigate_around=0;					
 				}else{
@@ -741,8 +719,8 @@ int main(void)
 					pwm3=((xpwm-2.37)*380)+((2.43-ypwm)*400);
 					pwm1=((xpwm-2.37)*380);//can moderate coeffcient here
 					}else{//not y compennet
-						pwm3=((xpwm-2.37)*761);
-						pwm1=((xpwm-2.37)*680);
+						pwm3=((xpwm-2.37)*733);
+						pwm1=((xpwm-2.37)*739);
 					}
 				}
 			}
@@ -760,8 +738,8 @@ int main(void)
 				pwm4=((2.37-xpwm)*400.0)+((2.43-ypwm)*400);
 				pwm2=((2.37-xpwm)*400.0);//can moderate coeffcient here
 				}else{//not y compennet
-					pwm2=((2.37-xpwm)*747);
-					pwm4=((2.37-xpwm)*844);
+					pwm2=((2.37-xpwm)*830);
+					pwm4=((2.37-xpwm)*827);
 				}
 
 
